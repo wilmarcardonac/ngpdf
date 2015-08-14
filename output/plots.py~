@@ -1,0 +1,8 @@
+import numpy as np
+import pylab as py
+
+Ak = np.loadtxt('Ak-distribution-simulations.dat')
+
+P1 = np.loadtxt('one-point-distribution-function.dat')
+
+exit()
