@@ -16,7 +16,8 @@ Program ngpdf
 
 Integer*4 :: i,j,index,counter
 type(DFTI_DESCRIPTOR), POINTER :: My_Desc1_Handle, My_Desc2_Handle
-Double Complex :: VarianceGaussianField,MeanGaussianField
+Double Complex,dimension(number_of_sites) :: GaussianField2,MeanGaussianField,VarianceGaussianField,NGField2,CovMatrixAlpha
+Double Complex,dimension(number_of_sites) :: MeanAlphak
 Integer :: isign,Status
 Real*8 :: mean_Ak
 
@@ -29,11 +30,10 @@ Real*8 :: mean_Ak
 ! Allocating memory for arrays 
 !#############################
 
-allocate(k(number_of_sites),PowerSpectrum(number_of_sites),fkG(number_of_sites),GaussianField(number_of_sites),&
-NGField(number_of_sites),fkNG(number_of_sites),Ak(number_of_realizations),All_alphak(number_of_realizations,number_of_sites),&
-All_Ak(number_of_realizations,number_of_sites),Ak_edges(1:number_of_bins),stat=status1) !, , , calphak(npts), Aksq(npts)
-!allocate(Trisp0(npts), term(ntrials,8), c1(ntrials), c2(ntrials), Power(npts), PowerRaw(npts), Bisp(iNyq,iNyq))
-!allocate(maxL(ntrials), error(ntrials), fNLest(ntrials), fNLsqTest(ntrials))
+allocate(k(number_of_sites),PowerSpectrum(number_of_sites),fkG(number_of_sites),GaussianField(number_of_realizations,number_of_sites),&
+NGField(number_of_realizations,number_of_sites),fkNG(number_of_sites),Ak(number_of_realizations),&
+All_alphak(number_of_realizations,number_of_sites),All_Ak(number_of_realizations,number_of_sites),&
+Ak_edges(1:number_of_bins),stat=status1) 
 
 !#########################################
 ! Setting seed for random number generator
@@ -73,29 +73,6 @@ Do i=1,number_of_sites
 
 End do
 
-!###################################################################
-! Precompute the bispectrum, for speed (unnormalised at this stage):
-!###################################################################
-
-!If (npts .ge. 2) then  
-!    Do i1=2,iNyq
-!        Do i2=2,iNyq
-!            Bisp(i1,i2) = B(k(i1),k(i2),Amp)
-!            !if(npts<17) print *,i1,i2,Bisp(i1,i2)
-!        End do
-!    End do
-!End If
-!print *, 'Bispectrum ', Bisp
-!stop
-
-!##########################
-! Open file to write output
-!##########################
-
-!open(unit=2,file=fileout)
-!write(2,21)NN,npts,fNL,ntrials
-!21 format(i3,i10,f8.5,i6)
-
 !###############################################################################################
 ! Main loop starts here; it is splitted in the available processors at the current node (16 or 12)
 ! which means that every processor computes a realization.
@@ -108,33 +85,29 @@ End do
 open(15,file='./output/one-point-distribution-functions.dat') ! Open file to test Gaussian Field in real space 
 
 open(16,file='./output/Ak-distribution-simulations.dat')    ! File for Ak distribution from simulations
-!!$omp do private( calphak,Power, Amp, Trisp0, Ntriangles, NT, temp, ak, k1, rescale_T, AveragePower)
 
 !$omp Parallel 
-!$omp Do Private(fKG,GaussianField,MeanGaussianField,VarianceGaussianField,NGField,My_Desc1_Handle,My_Desc2_Handle,isign,fkNG)
+!$omp Do Private(fKG,GaussianField2,My_Desc1_Handle,My_Desc2_Handle,isign)
 Do j=1,number_of_realizations
 
-!    rescale_T = dble(npts)
-    
     call random_seed ! Seed for random number generator. It should be called independently by each processor
 
     ! Set FT of gaussian field. Treat zero wavenumber and Nyquist mode separately, and ensure the field 
     ! is real by assigning complex conjugates to k < 0 modes:
  
-    fkG(1) = dcmplx(0.d0,0.d0)    ! k = 0 component  
+    fkG(1) = dcmplx(0.d0,0.d0)*sqrt(Volume)    ! k = 0 component  
 
     Do i=2,Nyquist-1
-        fkG(i)        = sqrt(PowerSpectrum(i)/2.d0)*dcmplx(rndgauss(),rndgauss())
+
+        fkG(i)        = sqrt(PowerSpectrum(i)/2.d0)*dcmplx(rndgauss(),rndgauss())*sqrt(Volume)
+
         fkG(number_of_sites-i+2) = conjg(fkG(i))
+
     End Do
 
-    fkG(Nyquist) = sqrt(PowerSpectrum(Nyquist))*dcmplx(rndgauss(),0.d0)     ! Nyquist component is real; treat separately
+    fkG(Nyquist) = sqrt(PowerSpectrum(Nyquist))*dcmplx(rndgauss(),0.d0)*sqrt(Volume)     ! Nyquist component is real; treat separately
 
-!    Do i=1,number_of_sites
-!        write(15,'(2es18.10)') real(fKG(i)),imag(fKG(i))
-!    End Do
-
-    GaussianField   = 0.d0    ! Set Gaussian field array to zero 
+    GaussianField2  = dcmplx(0.d0,0.d0)    ! Set auxiliary Gaussian field array to zero 
 
     ! Perform IFFT using intel MKL library:
 
@@ -142,39 +115,71 @@ Do j=1,number_of_realizations
     Status = DftiCreateDescriptor( My_Desc1_Handle, DFTI_DOUBLE, DFTI_COMPLEX, 1, number_of_sites )
     Status = DftiSetValue( My_Desc1_Handle, DFTI_PLACEMENT, DFTI_NOT_INPLACE)
     Status = DftiCommitDescriptor( My_Desc1_Handle )
-    Status = DftiComputeBackward( My_Desc1_Handle, fkG, GaussianField )
+    Status = DftiComputeBackward( My_Desc1_Handle, fkG, GaussianField2)
     Status = DftiFreeDescriptor(My_Desc1_Handle)
 
-!    Do i=1,number_of_sites
-!        write(15,'(2es18.10)') real(GaussianField(i)),imag(GaussianField(i))
-!    End Do
+    Do i=1,number_of_sites
 
-    MeanGaussianField = sum(GaussianField)/dble(number_of_sites)    ! Compute mean of Gaussian Field
+        GaussianField(j,i) = GaussianField2(i)
 
-    GaussianField = GaussianField - MeanGaussianField    ! Make the GaussianField zero mean
+    End Do
 
-!    Do i=1,number_of_sites
-!        write(15,'(2es18.10)') real(GaussianField(i)),imag(GaussianField(i))
-!    End Do
+End Do
 
-    MeanGaussianField = sum(GaussianField)/dble(number_of_sites)    ! Compute mean of transformed Gaussian field
+!$omp end do
+!$omp end parallel
 
-    VarianceGaussianField = sum((GaussianField - MeanGaussianField)**2)/dble(number_of_sites)    ! Compute variance of Gaussian field 
+Do i=1,number_of_sites    ! It computes ensemble average of initial Gaussian fields
 
-!        Amp             = AmpRaw/Variance   ! Rescale amplitude of the power spectrum with variance of Gaussian field  
-!        Power           = PowerRaw/Variance                  ! Rescale power spectrum with variance of Gaussian field 
-    GaussianField = GaussianField/sqrt(VarianceGaussianField)       ! Rescale Gaussian field to have unit variance 
-!        newVariance = real(sum(GaussianField**2)/dble(npts)) ! Variance of rescaled Gaussian field (should be unit)
+    MeanGaussianField(i) = sum(GaussianField(:,i))/dble(number_of_realizations) 
 
-    MeanGaussianField = sum(GaussianField)/dble(number_of_sites)    ! Mean of Gaussian Field (zero by now)
+End Do
 
-    VarianceGaussianField = sum((GaussianField - MeanGaussianField)**2)/dble(number_of_sites)    ! Compute variance of Gaussian field (one by now) 
+Do j=1,number_of_realizations    ! Redefine Gaussian field to be zero mean field (ensemble average)
 
-    NGField = GaussianField + fNL*(GaussianField**2 - VarianceGaussianField)    ! Apply local NG
+    Do i=1,number_of_sites
 
-!    Do i=1,number_of_sites
-!        write(15,'(2es18.10)') real(NGField(i)),imag(NGField(i))
-!    End Do
+        GaussianField(j,i) = GaussianField(j,i) - MeanGaussianField(i)
+
+    End Do
+
+End Do    ! By now the ensemble average of the Gaussian field is zero
+
+Do i=1,number_of_sites    ! It computes ensemble variance of (ensemble) zero mean Gaussian fields
+
+    VarianceGaussianField(i) = sum( ( GaussianField(:,i) - MeanGaussianField(i) )**2 )/dble(number_of_realizations) 
+
+End Do
+
+Do j=1,number_of_realizations    ! Redefine Gaussian field to be unit variance (ensemble)
+
+    Do i=1,number_of_sites
+
+        GaussianField(j,i) = GaussianField(j,i)/sqrt(VarianceGaussianField(i))
+
+    End Do
+
+End Do    ! By now the ensemble variance of the Gaussian field should approximately one
+
+Do j=1,number_of_realizations    ! Define non-Gaussian field 
+
+    Do i=1,number_of_sites
+
+        NGField(j,i) = GaussianField(j,i) + fNL*(GaussianField(j,i)**2 - VarianceGaussianField(i))
+
+    End Do
+
+End Do    
+
+!$omp Parallel 
+!$omp Do Private(fkNG,NGField2,My_Desc1_Handle,My_Desc2_Handle,isign)
+Do j=1,number_of_realizations
+
+    Do i=1,number_of_sites
+
+        NGField2(i) = NGField(j,i)
+
+    End Do
 
 ! FFT using intel MKL libraries:
 
@@ -182,246 +187,23 @@ Do j=1,number_of_realizations
     Status = DftiCreateDescriptor( My_Desc2_Handle, DFTI_DOUBLE,DFTI_COMPLEX, 1, number_of_sites )
     Status = DftiSetValue( My_Desc2_Handle, DFTI_PLACEMENT, DFTI_NOT_INPLACE)
     Status = DftiCommitDescriptor( My_Desc2_Handle )
-    Status = DftiComputeForward( My_Desc2_Handle, NGField, fkNG )
+    Status = DftiComputeForward( My_Desc2_Handle, NGField2, fkNG )
     Status = DftiFreeDescriptor(My_Desc2_Handle)
+    
 
-    fkNG = fkNG/dble(number_of_sites)    ! This is needed so the coefficients agree with inputs when fNL=0.
+    !fkNG = fkNG/dble(number_of_sites)    ! This is needed so the coefficients agree with inputs when fNL=0.
 
     fkNG = fKNG/sqrt(Volume)    ! Volume-normalized Fourier coefficients (Equation (12) in Matsubara's paper)
-
-!    Do i=1,number_of_sites
-!        write(15,'(2es18.10)') real(fkNG(i)),imag(fkNG(i))
-!    End Do
 
     Do i=1,number_of_sites
 
         All_alphak(j,i) = fkNG(i)/sqrt(PowerSpectrum(i))    ! Define normalized variables (Equation (40) in Matsubara's paper)
 
-        All_Ak(j,i) = abs(sqrt( real(All_alphak(j,i))**2 + imag(All_alphak(j,i))**2 ))    ! Define Fourier amplitude (Equation (56) in Matsubara's paper)
+        All_Ak(j,i) = abs(All_alphak(j,i))    ! Define Fourier amplitude (Equation (56) in Matsubara's paper)
 
         !thetha(i) =  ! Define Fourier phase
 
     End Do
-
-! Start with some crude estimates (equal weight) for fNL:
-
-!    fNLest(n)   = 0d0
-!    Ntriangles  = 0
-!    Var         = 0d0
-
-!    If (npts .ge. 4) then
-!        do i1 = 2, iNyq-1
-!            do i2 = 2, iNyq-i1+1
-
-!                P1 = Pk(k(i1),Amp)
-!                P2 = Pk(k(i2),Amp)
-!                P3 = Pk(k(i1+i2-1),Amp)
-
-!                xx = dble(alphak(i1)*alphak(i2)*calphak(i1 + i2 - 1))*sqrt(P1*P2*P3)/(2d0*(P1*P2+P1*P3+P2*P3))
-
-!                fNLest(n)   = fNLest(n) + xx
-!                Var         = Var + xx**2
-!                Ntriangles  = Ntriangles + 1
-!            end do
-!        end do
-    
-!        fNLest(n) = fNLest(n)/dble(Ntriangles)
-
-!        write(6,50)fNLest(n),sqrt((Var/dble(Ntriangles)-fNLest(n)**2)/dble(Ntriangles))
-!        50  format('Simple fNL   estimate from B:',es17.10,' +/- ',es17.10)
-    
-!    Else 
-
-!        write(6,53)fNLest(n)
-!        53  format('Bispectrum is zero for 1-,2-point function. Simple fNL estimate from B:',es17.10)
-
-!    End If 
-!    stop
-! Trispectrum test:
-
-! Simple one first T(k,k,-k,-k):
-
-!    fNLsqTest(n)    = 0d0
-!    NT              = 0
-!    Var             = 0d0
-
-!    If (npts .ge. 16) then    
-
-!        Do i1 = 2, iNyq/2-1
-!            ak = alphak(i1)
-!            k1 = k(i1)
-!        print *,i1,ak,dble(abs(ak)**4),Trisp(k1,k1,-k1,-k1,Amp),dble(abs(ak)**4)/Trisp(k1,k1,-k1,-k1,Amp)
-!            xx              = (dble(abs(ak)**4)-2d0*AveragePower**2)/(Trisp(k1,k1,-k1,-k1,Amp)*dble(npts))
-!            fNLsqTest(n)    = fNLsqTest(n) + xx
-!            Var             = Var + xx**2
-!            NT              = NT  + 1
-!        End do
-
-!       Var             = Var/dble(NT)-(fNLsqTest(n)/dble(NT))**2
-
-!        write(6,51)fNLsqTest(n)/dble(NT),sqrt(Var/dble(NT))
-!        51  format('Simple fNL^2 estimate from T:',es17.10,' +/- ',es17.10)
-!        write(6,52)sqrt(fNLsqTest(n)/dble(NT))
-!        52  format('Simple fNL   estimate from T:',es17.10)
-
-!    Else 
-
-!        write(6,54) sqrt(fNLsqTest(n))
-!        54  format('Trispectrum T(k,k,-k,-k) is zero for 1-,..,15-point function. Simple fNL estimate from T:',es17.10)
-    
-!    End If
-!stop
-!    fNLsqTest(n)    = 0d0
-!    NT              = 0
-
-! These modes have no disconnected part [ -> -> -> <- ]:
-
-!    If (npts .ge. 8) then 
-
-!        do i1 = 2, iNyq-1
-!            do i2 = 2, iNyq-i1
-!                do i3 = 2, iNyq - i1 - i2 + 2
-
-!                    temp = Trisp(k(i1),k(i2),k(i3),-k(i1+i2+i3-2),Amp)
-!                    fNLsqTest(n) = (dble(alphak(i1)*alphak(i2)*alphak(i3)*calphak(i1 + i2 + i3 - 2)))/temp
-!                    NT = NT + 1
-
-!                    if(abs(k(i1)+k(i2)+k(i3)-k(i1+i2+i3-2))>keps) print *,'Problem'
-!                end do
-!            end do
-!        end do
-
-!        fNLsqTest(n) = fNLsqTest(n)*dble(npts**2)/dble(NT)
-
-!        print *,'Crude fNL^2 estimate from T:',fNLsqTest(n)
-
-!    Else 
-
-!        print *,'Trispectrum -> -> -> <- is zero for # points < 8. Crude fNL^2 estimate from T:',fNLsqTest(n)
-
-!    End If
-!stop 
-! This is really where the Matsubara calculation starts.
-!=======================================================
-
-!    If (npts .ge. 4) then 
-
-!        do i1 = 2, iNyq-1
-!            do i2 = 2, iNyq-i1+1
-!                term(n, 1) = term(n, 1) + dble(alphak(i1)*alphak(i2)*calphak(i1 + i2 - 1))*Bisp(i1,i2)
-!            end do
-!        end do
-    
-        ! Correct for renormalisation of Amp:
-
-!        term(n, 1) = term(n, 1)/sqrt(Variance)
-
-!    End If
-
-! Terms 2,6 (slowest, with 3,7):
-
-!    If ( npts .ge. 8) then 
-
-!        do i1 = 2, iNyq-1
-!            do i2 = 2, iNyq-i1
-!                do i3=2, iNyq - i1 - i2 + 2
-!                    temp = dble(alphak(i1)*alphak(i2)*alphak(i3)*calphak(i1 + i2 + i3 - 2))
-!                    term(n, 2) = term(n, 2) + temp * Trisp(k(i1), k(i2), k(i3), -(k(i1) + k(i2) + k(i3)), Amp)
-!                    term(n, 6) = term(n, 6) + temp * Bisp(i1,i2) * Bisp(i3,i1+i2+i3-2)
-!                end do
-!            end do
-!        end do
-
-        ! Correct Bisp^2 terms for renormalisation of Amp
-
-!        term(n, 2) =   term(n, 2) / 3d0
-!        term(n, 6) = - term(n, 6) / Variance
-
-!    End If
-
-! Terms 3,7 (slowest, with 2,6):
-
-!    If (npts .ge. 4) then 
-
-!        do i1 = 2, iNyq-1
-!            do i2 = 2, iNyq-i1+1
-!                do i3 = 2, i1 + i2 - 2
-!                    temp = dble(alphak(i1)*alphak(i2)*calphak(i3)*calphak(i1 + i2 - i3))
-!                    term(n, 3) = term(n, 3) + temp * Trisp(k(i1), k(i2),-k(i3), -(k(i1) + k(i2) - k(i3)),Amp)
-!                    term(n, 7) = term(n, 7) + temp * (Bisp(i1,i2)*Bisp(i3,i1+i2-i3)+4d0*Bisp(i1,i3)*Bisp(i2,i1+i2-i3))
-!                end do
-!            end do
-!        end do
-
-!        term(n, 3) =   term(n, 3) / 4d0
-!        term(n, 7) = - term(n, 7) / (4d0 * Variance)
-
-!    End If
-
-! Terms 4,5,8:
-
-!    If ( npts .ge. 2) then 
-
-!        do i1 = 2, iNyq
-!            do i2 = 2, iNyq
-!                term(n, 4) = term(n, 4) + (Aksq(i1) + Aksq(i2) - 1d0)* &
-!                Trisp(k(i1), k(i2), -k(i1), -k(i2), Amp)
-!            end do
-!        end do
-
-!        term(n, 4) = -term(n, 4) / 2d0
-!        term(n, 5) =  (term(n, 1)**2) / 2d0
-
-!    End If
-
-!    If (npts .ge. 4) then 
-
-!        do i1 = 2, iNyq-1
-!            do i2 = 2, iNyq-i1+1
-!                term(n, 8) = term(n, 8) + (Aksq(i1) + Aksq(i2) + Aksq(i1 + i2 - 1) - 1d0) * Bisp(i1,i2)**2
-!            end do
-!        end do
-
-!        term(n, 8) = term(n, 8) / (2d0 * Variance)
-
-!    End If
-
-! Rescale trispectrum terms:
-
-!    term(n,2) = term(n,2) * rescale_T
-!    term(n,3) = term(n,3) * rescale_T
-!    term(n,4) = term(n,4) * rescale_T
-
-!    do i=1,8
-!        if(i==1) then
-!            print *,i,term(n,1)/sqrt(V)
-!        else
-!            print *,i,term(n,i)/V
-!        endif
-!    end do
-
-!    coeff1 = term(n, 1)/sqrt(V)
-!    coeff2 = sum(term(n, 2:8))/V
-
-!    c1(n) = coeff1
-!    c2(n) = coeff2
- 
-!    If (npts .ge. 2) then 
-!        maxL(n)     = -coeff1/(2d0*coeff2)
-!        error(n)    = 1d0/sqrt(2d0*abs(coeff2))
-!    End If 
-
-!    print *,'Amp:',Amp
-!    print *,'Coefficients:', coeff1, coeff2
-!    print *,'Perturbations at true fNL:',coeff1*fNL,coeff2*fNL**2
-
-!    tid = omp_get_thread_num()
-    
-!    If (npts .ge. 2) then
-!        write(6,60)n,maxL(n),error(n),tid
-!        60  format('Trial ',i5,' MaxL fNL:  ',es17.10,' +/-',es17.10,' Thread ',i4)
-!        print *,' '
-!    End If
 
 !####################
 ! Main loop ends here
@@ -432,11 +214,50 @@ End do
 !$omp end do
 !$omp end parallel
 
-Do i=2,Nyquist-1
+Do i=1,number_of_sites    ! It computes ensemble average of normalized Fourier coefficients of non-Gaussian field
 
-    print *, All_alphak(1,i),All_alphak(1,number_of_sites - i + 2)
-    stop
+    MeanAlphak(i) = sum(All_alphak(:,i))/dble(number_of_realizations) 
+
 End Do
+
+print *,All_alphak(10,2)
+print *,All_alphak(10,number_of_sites)
+print *,conjg(All_alphak(10,2))
+print *,abs(All_alphak(10,2))**2
+print *,All_alphak(10,2)*All_alphak(10,number_of_sites)
+print *,MeanAlphak(2),MeanAlphak(number_of_sites)
+stop
+
+
+Do j=1,number_of_realizations    ! Redefine Gaussian field to be zero mean field (ensemble average)
+
+    Do i=1,number_of_sites
+
+        All_alphak(j,i) = All_alphak(j,i) - MeanAlphak(i)
+
+    End Do
+
+End Do    ! By now the ensemble average of the Gaussian field is zero
+
+!CovMatrixAlpha(50) = dcmplx(0.d0,0.d0)
+
+!Do j=1,number_of_realizations    ! It computes ensemble average of initial Gaussian fields
+
+!    CovMatrixAlpha(50) = All_alphak(j,50)*All_alphak(j,number_of_sites) +  CovMatrixAlpha(50)
+
+!End Do
+
+!print *, CovMatrixAlpha(50)/dble(number_of_realizations)
+!stop
+!Do i=2,Nyquist-1
+
+!    print *, All_alphak(1,i),All_alphak(1,number_of_sites - i + 2)
+!    print *, All_alphak(1,i)*All_alphak(1,number_of_sites - i )!+ 2)
+!    CovMatrixAlpha(50) = All_alphak(1,i)*All_alphak(1,number_of_sites - i ) + CovMatrixAlpha(50)
+!    stop
+!End Do
+
+!print *, CovMatrixAlpha(50)
 stop
 Do i=1,number_of_sites
 
